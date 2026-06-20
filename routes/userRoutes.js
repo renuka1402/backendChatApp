@@ -1,3 +1,9 @@
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const { getUsers } = require('../controllers/userController');
+
+const router = express.Router();
+
 const requireAuth = (req, res, next) => {
   const authHeader = req.headers.authorization; // Header se token le rahe hain
 
@@ -14,3 +20,9 @@ const requireAuth = (req, res, next) => {
     res.status(401).json({ error: 'Unauthorized: Invalid token' });
   }
 };
+
+router.get('/users', requireAuth, getUsers);
+
+module.exports = router;
+
+

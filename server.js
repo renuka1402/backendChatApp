@@ -16,7 +16,6 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey_change_this";
-const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/chatdb";
 
 mongoose.set("bufferCommands", false);
 
@@ -101,14 +100,45 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
+// HAR USER KE SAATH UNKA LAST MESSAGE FETCH KARNE KA ROUTE
 app.get("/api/users", requireAuth, async (req, res) => {
   try {
-    const users = await User.find({ username: { $ne: req.user.username } })
+    const loggedInUser = req.user.username;
+
+    const users = await User.find({ username: { $ne: loggedInUser } })
       .select("username")
-      .sort({ username: 1 })
       .lean();
-    res.json({ users });
-  } catch {
+
+    const usersWithLastMessage = await Promise.all(
+      users.map(async (user) => {
+        const lastMsg = await Message.findOne({
+          $or: [
+            { sender: loggedInUser, recipient: user.username },
+            { sender: user.username, recipient: loggedInUser },
+          ],
+        })
+        .sort({ timestamp: -1 })
+        .select("message timestamp")
+        .lean();
+
+        return {
+          _id: user._id,
+          username: user.username,
+          lastMessage: lastMsg ? lastMsg.message : "", 
+          lastMessageAt: lastMsg ? lastMsg.timestamp : null,
+        };
+      })
+    );
+
+    usersWithLastMessage.sort((a, b) => {
+      if (!a.lastMessageAt) return 1;
+      if (!b.lastMessageAt) return -1;
+      return new Date(b.lastMessageAt) - new Date(a.lastMessageAt);
+    });
+
+    res.json({ users: usersWithLastMessage });
+  } catch (err) {
+    console.error("Fetch users error:", err);
     res.status(500).json({ error: "Failed to fetch users" });
   }
 });
@@ -149,16 +179,21 @@ io.use((socket, next) => {
 });
 
 io.on("connection", (socket) => {
+  const username = socket.user.username;
+  
+  // FIXED: Har user ko unke username wale personal room mein join karwayein
+  socket.join(username);
+
   console.log("[socket:connect]", {
     id: socket.id,
-    username: socket.user.username,
+    username: username,
     transport: socket.conn.transport.name,
   });
 
   socket.conn.on("upgrade", (transport) => {
     console.log("[socket:upgrade]", {
       id: socket.id,
-      username: socket.user.username,
+      username: username,
       transport: transport.name,
     });
   });
@@ -168,30 +203,24 @@ io.on("connection", (socket) => {
       const recipient = `${data.recipient || ""}`.trim();
       const text = `${data.message || data.text || ""}`.trim();
 
-      console.log("[socket:message:in]", {
-        from: socket.user.username,
-        recipient,
-        hasText: Boolean(text),
-      });
+      console.log("[socket:message:in]", { from: username, recipient, hasText: Boolean(text) });
 
       if (!recipient || !text) {
-        console.log("[socket:message:ignored] missing recipient or text");
         if (typeof ack === "function") ack({ ok: false });
         return;
       }
 
       const saved = await Message.create({
-        sender: socket.user.username,
+        sender: username,
         recipient,
         message: text,
       });
 
-      console.log("[socket:message:saved]", {
-        id: saved._id,
-        from: saved.sender,
-        recipient: saved.recipient,
-      });
-      io.emit("receive_message", saved);
+      console.log("[socket:message:saved]", { id: saved._id, from: saved.sender, recipient: saved.recipient });
+      
+      // FIXED: Pure server par broadcast karne ki jagah ab sirf Sender aur Recipient ke specific rooms me message jayega
+      io.to(username).to(recipient).emit("receive_message", saved);
+      
       if (typeof ack === "function") ack({ ok: true });
     } catch (err) {
       console.error("[socket:message:error]", err.message);
@@ -202,15 +231,13 @@ io.on("connection", (socket) => {
   socket.on("disconnect", (reason) => {
     console.log("[socket:disconnect]", {
       id: socket.id,
-      username: socket.user.username,
+      username: username,
       reason,
     });
   });
 });
 
-
-
-
+// MONGODB CLOUD ATLAS CONNECTION
 const dbURI = "mongodb+srv://renu1402:Ankit%401705@cluster0.q0h1cvi.mongodb.net/chatDatabase?retryWrites=true&w=majority&appName=Cluster0";
 
 mongoose.connect(dbURI)

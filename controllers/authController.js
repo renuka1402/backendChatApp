@@ -2,8 +2,12 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 
-const createToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+const createToken = (user) => {
+    return jwt.sign(
+        { id: user._id, username: user.username },
+        process.env.JWT_SECRET,
+        { expiresIn: '7d' }
+    );
 };
 
 exports.register = async (req, res) => {
@@ -17,10 +21,14 @@ exports.register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
         const user = await User.create({ username, password: hashedPassword });
 
-        const token = createToken(user._id);
+        const token = createToken(user);
         res.cookie('token', token, { httpOnly: true });
 
-        res.status(201).json({ status: 'success', username: user.username });
+        res.status(201).json({
+            status: 'success',
+            token,
+            username: user.username
+        });
     } catch (err) {
         res.status(400).json({ status: 'error', message: 'Registration failed' });
     }
@@ -32,10 +40,14 @@ exports.login = async (req, res) => {
         const user = await User.findOne({ username });
 
         if (user && (await bcrypt.compare(password, user.password))) {
-            const token = createToken(user._id);
+            const token = createToken(user);
             res.cookie('token', token, { httpOnly: true });
 
-            res.status(200).json({ status: 'success', username: user.username });
+            res.status(200).json({
+                status: 'success',
+                token,
+                username: user.username
+            });
         } else {
             res.status(401).json({ status: 'error', message: 'Invalid credentials' });
         }

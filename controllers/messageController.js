@@ -2,11 +2,16 @@ const Message = require('../models/Message');
 
 exports.getMessages = async (req, res) => {
   try {
-  
     const sender = req.user.username.toLowerCase();
     const recipient = req.params.recipient.toLowerCase();
 
-    
+    // 1. Pehle saare unread messages ko 'read' mark karein
+    await Message.updateMany(
+      { sender: recipient, recipient: sender, isRead: false },
+      { $set: { isRead: true } }
+    );
+
+    // 2. Ab messages fetch karein
     const messages = await Message.find({
       $or: [
         { sender, recipient },

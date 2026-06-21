@@ -1,38 +1,57 @@
+const User = require('../models/User');
+const Message = require('../models/Message');
+
 exports.getUsers = async (req, res) => {
   try {
     const me = req.user.username.toLowerCase();
-    // 'me' variable ko case-insensitive rakhein
-    const users = await User.find({ username: { $ne: req.user.username } }).lean();
 
-    const usersWithData = await Promise.all(users.map(async (user) => {
-      const target = user.username.toLowerCase();
-      
-      // 1. Last message dhundhein
-      const lastMsg = await Message.findOne({
-        $or: [{ sender: me, recipient: target }, { sender: target, recipient: me }]
-      }).sort({ timestamp: -1 }).lean();
+    const users = await User.aggregate([
+      { $match: { username: { $ne: req.user.username } } },
+      {
+        $lookup: {
+          from: 'messages',
+          let: { targetUser: { $toLower: "$username" } },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $or: [ { $eq: ["$sender", me] }, { $eq: ["$sender", "$$targetUser"] } ] },
+                    { $or: [ { $eq: ["$recipient", "$$targetUser"] }, { $eq: ["$recipient", me] } ] }
+                  ]
+                }
+              }
+            },
+            { $sort: { timestamp: -1 } },
+            { $limit: 1 }
+          ],
+          as: 'lastMsg'
+        }
+      },
+      {
+        $lookup: {
+          from: 'messages',
+          let: { targetUser: { $toLower: "$username" } },
+          pipeline: [
+            { $match: { $expr: { $and: [ { $eq: ["$sender", "$$targetUser"] }, { $eq: ["$recipient", me] }, { $eq: ["$isRead", false] } ] } } },
+            { $count: "count" }
+          ],
+          as: 'unreadData'
+        }
+      },
+      {
+        $project: {
+          username: 1,
+          lastMessage: { $ifNull: [{ $arrayElemAt: ["$lastMsg.message", 0] }, "Tap to start chatting"] },
+          lastMessageAt: { $ifNull: [{ $arrayElemAt: ["$lastMsg.timestamp", 0] }, 0] },
+          unreadCount: { $ifNull: [{ $arrayElemAt: ["$unreadData.count", 0] }, 0] }
+        }
+      }
+    ]);
 
-      // 2. Unread messages count karein (Sirf wo jo samne wale ne bheje hain)
-      const unreadCount = await Message.countDocuments({
-        sender: target,
-        recipient: me,
-        isRead: false
-      });
-
-      return {
-        _id: user._id,
-        username: user.username,
-        lastMessage: lastMsg?.message || 'Tap to start chatting',
-        lastMessageAt: lastMsg?.timestamp || 0,
-        unreadCount: unreadCount // Yeh field ab frontend ko milegi
-      };
-    }));
-
-    // Sorting (Latest message upar rahega)
-    usersWithData.sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
-
-    res.json(usersWithData);
+    res.json(users);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 };
